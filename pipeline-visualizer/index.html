@@ -83,7 +83,14 @@
 
                 // fetch FileList object
                 var files = e.target.files || e.dataTransfer.files;
-                if (files.length == 1 && files[0].type.indexOf("text") == 0) {
+                if(files.length != 1) {
+                    return;
+                }
+
+                var fileParts = files[0].name.split('.');
+                var fileExt = fileParts[fileparts.length-1].toLowerCase();
+
+                if (fileExt == "txt" || fileExt == "log") {
                     var reader = new FileReader();
                     reader.onload = function (e) {
                         self.parseLog(e.target.result.trim());
