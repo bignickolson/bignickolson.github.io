@@ -88,7 +88,7 @@
                 }
 
                 var fileParts = files[0].name.split('.');
-                var fileExt = fileParts[fileparts.length-1].toLowerCase();
+                var fileExt = fileParts[fileParts.length-1].toLowerCase();
 
                 if (fileExt == "txt" || fileExt == "log") {
                     var reader = new FileReader();
