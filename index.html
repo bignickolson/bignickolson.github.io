@@ -1,0 +1,262 @@
+<html>
+
+<head>
+    <title>Sitecore Commerce Pipeline Visualizer</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.4.1/jquery.min.js" integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js" integrity="sha384-wfSDF2E50Y2D1uUdj0O3uMBJnjuUD4Ih7YwaYd1iqfktj0Uod8GCExl3Og8ifwB6" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/knockout/3.5.0/knockout-min.js" integrity="sha256-Tjl7WVgF1hgGMgUKZZfzmxOrtoSf8qltZ9wMujjGNQk=" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.9.1/underscore-min.js" integrity="sha256-G7A4JrJjJlFqP0yamznwPjAApIKPkadeHfyIwiaa9e0=" crossorigin="anonymous"></script>
+
+    <script type="text/javascript">
+        function parseTypeName(type) {
+            var genericRegex = /(.*?)`(\d*)\[(.*)\]/;
+            var results = type.match(genericRegex);
+            if (!results) {
+                return getTypeFromFullName(type);
+            }
+            else {
+                var paramCount = parseInt(results[2]);
+                var cleanType = results[1] + "<";
+
+                if (paramCount == 1) {
+                    cleanType += getTypeFromFullName(results[3].substr(1));
+                }
+                else {
+                    var typeParams = results[3].split("],[")
+
+                    for (var i = 0; i < typeParams.length; i++) {
+                        if (i == 0) {
+                            cleanType += parseTypeName(typeParams[i].substr(1));
+                        }
+                        else {
+                            cleanType += parseTypeName(typeParams[i].substr(0, typeParams[i].length - 2));
+                        }
+
+                        if (i != typeParams.length - 1) {
+                            cleanType += ", ";
+                        }
+                    }
+                }
+                cleanType += ">";
+                return cleanType;
+            }
+        }
+
+        function getTypeFromFullName(type) {
+            return type.split(",")[0];
+        }
+
+        function VM() {
+            var self = this;
+            self.pipelineLog = ko.observable();
+            self.pipelines = ko.observableArray();
+            self.filterText = ko.observable("").extend({ rateLimit: 500 });
+            self.isDragging = ko.observable();
+
+            self.initDragDrop = function () {
+                var body = $('body')[0];
+                var xhr = new XMLHttpRequest();
+                if (xhr.upload) {
+                    // file drop
+                    body.addEventListener("dragover", self.dragHover, false);
+                    body.addEventListener("dragleave", self.dragHover, false);
+                    body.addEventListener("drop", self.dropped, false);
+                }
+            };
+
+            self.dragHover = function (e) {
+                e.stopPropagation();
+                e.preventDefault();
+                if (e.target.tagName == 'BODY') {
+                    self.isDragging(true);
+                }
+                else {
+                    self.isDragging(false);
+                }
+            };
+
+            self.dropped = function (e) {
+                // cancel event and hover styling
+                self.dragHover(e);
+
+                // fetch FileList object
+                var files = e.target.files || e.dataTransfer.files;
+                if (files.length == 1 && files[0].type.indexOf("text") == 0) {
+                    var reader = new FileReader();
+                    reader.onload = function (e) {
+                        self.parseLog(e.target.result.trim());
+                    }
+                    reader.readAsText(files[0]);
+                }
+            }
+
+            self.filteredPipelines = ko.pureComputed(function () {
+                var result;
+                if (!self.filterText()) {
+                    result = self.pipelines();
+                }
+                else{
+
+                    result = _.filter(self.pipelines(), function (pipeline) {
+                        var pipelineMatch = pipeline.name().toLowerCase().includes(self.filterText().toLowerCase());
+                        var blockMatch = _.some(pipeline.blocks(), function (block) {
+                            return block.name().toLowerCase().includes(self.filterText().toLowerCase());
+                        });
+
+                        return pipelineMatch || blockMatch;
+                    });
+                }
+
+                return _.sortBy(result, function(pipeline){
+                    return pipeline.name();
+                });
+
+
+            }, self);
+
+            self.pipelineLog.subscribe(function (value) {
+                self.parseLog(value.trim());
+            });
+
+            self.searchForPipeline = function(block){
+                self.filterText(block.name());
+                $('.collapse').collapse('hide');
+            };
+
+
+            self.parseLog = function (logText) {
+                var newPipelines = [];
+                var lines = logText.split(/\r?\n/);
+                for (var i = 0; i < lines.length - 1; i++) {
+                    var line = lines[i];
+                    var blocks = [];
+                    var isPipelineStart = line.startsWith("---");
+                    if (isPipelineStart) {
+
+                        var namespace = lines[++i];
+                        var nameLines = lines[++i].split("(");
+                        var name = nameLines[0]
+                        var pipelineInput = parseTypeName(nameLines[1].split(" => ")[0]);
+                        var pipelineOutput = parseTypeName(nameLines[1].split(" => ")[1].replace(")", ""));
+
+                        line = lines[++i];
+                        while (!line.startsWith("---")) {
+                            line = lines[++i];
+                            var blockParts = line.trim().split("(");
+                            var blockIn = blockParts[1].split(" => ")[0];
+                            var blockOut = blockParts[1].split(" => ")[1].replace(")", "");
+                            blocks.push(new Block(blockParts[0].trim(), parseTypeName(blockIn), parseTypeName(blockOut)));
+                            line = lines[++i];
+                        }
+                        i--;
+                        newPipelines.push(new Pipeline(name, namespace, blocks, pipelineInput, pipelineOutput));
+                    }
+                }
+                self.pipelines(newPipelines);
+            };
+        }
+
+        function Pipeline(name, namespace, blocks, input, output) {
+            var self = this;
+            this.name = ko.observable(name);
+            this.namespace = ko.observable(namespace);
+            this.blocks = ko.observableArray(blocks)
+            this.input = ko.observable(input);
+            this.output = ko.observable(output)
+
+            this.argumentChanged = input != output;
+        }
+
+        function Block(name, input, output) {
+            var nameParts = name.split(".")
+            this.name = ko.observable(nameParts[nameParts.length - 1]);
+            this.namespace = ko.observable(name.trim("." + this.name()));
+            this.input = ko.observable(input);
+            this.output = ko.observable(output)
+
+            this.isSubPipeline = this.name().toLowerCase().includes("pipeline");
+            this.argumentChanged = input != output;
+        }
+
+        $(function () {
+            var vm = new VM();
+            vm.initDragDrop();
+            ko.applyBindings(vm);
+        });
+    </script>
+</head>
+
+<body>
+    <div class="container" style="margin-top:15px;">
+        <div class="row">
+            <div class="col-3">
+                <h3>Pipelines Visualizer</h3>
+            </div>
+            <div class="col pl-0">
+                <input style="margin-top:3px;" type="text" placeholder="Search..." data-bind="textInput:
+                filterText" />
+            </div>
+        </div>
+        <div class="row">
+            <p data-bind="if: !pipelines() || pipelines().length == 0">
+                No pipelines  loaded, you can drop a node configuration log onto the page to load it
+            </p>
+            <p data-bind="if: pipelines().length > 0 &&  filteredPipelines().length == 0">
+                Nothing found, search again
+            </p>
+            <div class="accordion mt-2" style="width: 100%" id="accordionPipeline" data-bind="foreach:
+                    filteredPipelines">
+                <div class="card">
+                    <div class="card-header" data-bind="attr : {id :
+                            'heading' + $index() }">
+                        <button class="p-0 btn btn-link" type="button" class="pipeline-collapse-button" data-toggle="collapse" data-bind="text: name, attr: {'data-target': '#collapse' + $index(), title: namespace() + '.' + name()}"></button>
+                        -
+                         <span style="font-size: 10pt;" data-bind="text: blocks().length"></span>
+                         <span style="font-size: 10pt;" data-bind="text: blocks().length > 1 ? 'blocks' : 'block'"></span> 
+
+                        <p class="mb-0" style="font-size: 10pt;">
+                            <span data-bind="text: input"></span> <span data-bind="visible: argumentChanged">-&gt;</span>
+                            <span data-bind="text: output, visible:
+                                    argumentChanged"></span>
+                        </p>
+                    </div>
+                    <div data-bind="attr: {'id': 'collapse' + $index()}" class="collapse">
+                        <div class="card-body">
+                            <div class="card">
+                                <ul class="list-group list-group-flush" data-bind="foreach: blocks">
+                                    <li class="list-group-item" style="border-top-width: 1px;
+                                            margin-bottom:3px;" data-bind="style: {
+                                            'background-color': argumentChanged
+                                            ? 'rgb(238,255,236)' : ''}">
+                                        <p class="mb-0" style="font-weight:
+                                                bold" data-bind="text: name, visible: isSubPipeline == false"></p>
+                                        <button class="p-0 btn btn-link" style="font-weight: bold; border-width: 0 1;" type="button" 
+                                        data-bind="text: name, visible:  isSubPipeline, click: $root.searchForPipeline"></button>
+                                        <p class="mb-0" style="font-size: 10pt;" data-bind="visible: argumentChanged">
+                                            <span data-bind="text: input"></span>
+                                            -&gt; <span data-bind="text:
+                                                    output"></span>
+                                        </p>
+                                        <p class="mb-0" style="font-size:
+                                                10pt;" data-bind="visible:
+                                                !argumentChanged">
+                                            <span data-bind="text: input"></span>
+                                        </p>
+                                        <i data-bind="visible: $index() !=
+                                                0" class="material-icons" style="font-size: 65px;
+                                                color:#cccccc; position:
+                                                relative; top: -55px; left:
+                                                -26px; line-height: 0px;">arrow_drop_down</i>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+
+</html>
